@@ -268,4 +268,35 @@ int read_file(const char *filename, char **bufptr, size_t *size);
 FILE *get_preset_file(char *filename, size_t filename_size,
                       const char *preset_name, int is_path, const char *codec_name);
 
+typedef struct {
+    enum PixelFormat pix_fmt;
+} FFSinkContext;
+
+extern AVFilter ffsink;
+
+/**
+ * Extract a frame from sink.
+ *
+ * @return a negative error in case of failure, 1 if one frame has
+ * been extracted successfully.
+ */
+int get_filtered_video_frame(AVFilterContext *sink, AVFrame *frame,
+                             AVFilterBufferRef **picref, AVRational *pts_tb);
+
+typedef struct {
+    enum AVSampleFormat sample_fmt;
+} FFASinkContext;
+
+extern AVFilter ffasink;
+
+/**
+ * Extract an audio frame from sink.
+ *
+ * @return a negative error in case of failure
+ */
+int get_filtered_audio_buffer(AVFilterContext *asink,
+                              uint8_t **buf, int *buf_size,
+                              AVFilterBufferRef **samplesref,
+                              double *pts);
+
 #endif /* FFMPEG_CMDUTILS_H */

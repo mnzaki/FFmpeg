@@ -934,3 +934,136 @@ FILE *get_preset_file(char *filename, size_t filename_size,
 
     return f;
 }
+
+#if CONFIG_AVFILTER
+
+static int ffsink_init(AVFilterContext *ctx, const char *args, void *opaque)
+{
+    FFSinkContext *priv = ctx->priv;
+
+    if (!opaque)
+        return AVERROR(EINVAL);
+    *priv = *(FFSinkContext *)opaque;
+
+    return 0;
+}
+
+static void null_end_frame(AVFilterLink *inlink) { }
+
+static int ffsink_query_formats(AVFilterContext *ctx)
+{
+    FFSinkContext *priv = ctx->priv;
+    enum PixelFormat pix_fmts[] = { priv->pix_fmt, PIX_FMT_NONE };
+
+    avfilter_set_common_pixel_formats(ctx, avfilter_make_format_list(pix_fmts));
+    return 0;
+}
+
+AVFilter ffsink = {
+    .name      = "ffsink",
+    .priv_size = sizeof(FFSinkContext),
+    .init      = ffsink_init,
+
+    .query_formats = ffsink_query_formats,
+
+    .inputs    = (AVFilterPad[]) {{ .name          = "default",
+                                    .type          = AVMEDIA_TYPE_VIDEO,
+                                    .end_frame     = null_end_frame,
+                                    .min_perms     = AV_PERM_READ, },
+                                  { .name = NULL }},
+    .outputs   = (AVFilterPad[]) {{ .name = NULL }},
+};
+
+int get_filtered_video_frame(AVFilterContext *ctx, AVFrame *frame,
+                             AVFilterBufferRef **picref_ptr, AVRational *tb)
+{
+    int ret;
+    AVFilterBufferRef *picref;
+    *picref_ptr = NULL;
+
+    if ((ret = avfilter_request_frame(ctx->inputs[0])) < 0)
+        return ret;
+    if (!(picref = ctx->inputs[0]->cur_buf))
+        return AVERROR(ENOENT);
+    *picref_ptr = picref;
+    ctx->inputs[0]->cur_buf = NULL;
+    *tb = ctx->inputs[0]->time_base;
+
+    memcpy(frame->data,     picref->data,     sizeof(frame->data));
+    memcpy(frame->linesize, picref->linesize, sizeof(frame->linesize));
+    frame->pkt_pos          = picref->pos;
+    frame->interlaced_frame = picref->video->interlaced;
+    frame->top_field_first  = picref->video->top_field_first;
+    frame->key_frame        = picref->video->key_frame;
+    frame->pict_type        = picref->video->pict_type;
+    frame->sample_aspect_ratio = picref->video->sample_aspect_ratio;
+
+    return 1;
+}
+
+static void
+ffasink_filter_samples(AVFilterLink *link, AVFilterBufferRef *samplesref) { }
+
+static int ffasink_init(AVFilterContext *ctx, const char *args, void *opaque)
+{
+    FFASinkContext *priv = ctx->priv;
+
+    if (!opaque)
+        return AVERROR(EINVAL);
+    *priv = *(FFASinkContext *)opaque;
+
+    return 0;
+}
+
+static int ffasink_query_formats(AVFilterContext *ctx)
+{
+    FFASinkContext *priv = ctx->priv;
+    enum AVSampleFormat sample_fmts[] = {
+        priv->sample_fmt, AV_SAMPLE_FMT_NONE
+    };
+
+    avfilter_set_common_sample_formats(ctx, avfilter_make_format_list(sample_fmts));
+    return 0;
+}
+
+int get_filtered_audio_buffer(AVFilterContext *ctx,
+                              uint8_t **buf, int *buf_size,
+                              AVFilterBufferRef **samplesref_ptr,
+                              double *pts)
+{
+    AVFilterBufferRef *samplesref;
+    int ret;
+
+    if ((ret = avfilter_request_frame(ctx->inputs[0])))
+        return ret;
+    if (!(samplesref = ctx->inputs[0]->cur_buf))
+        return AVERROR(EINVAL);
+    *samplesref_ptr = samplesref;
+    ctx->inputs[0]->cur_buf = NULL;
+    *buf_size = samplesref->audio->nb_samples *
+        av_get_channel_layout_nb_channels(samplesref->audio->channel_layout) *
+        ((av_get_bits_per_sample_fmt(samplesref->format) + 7) >> 3);
+
+    // AVFilterBufferRef stores pts with timebase 1/samplerate.
+    *pts = (double)samplesref->pts / samplesref->audio->sample_rate;
+
+    *buf = samplesref->data[0];
+
+    return 0;
+}
+
+AVFilter ffasink = {
+    .name      = "ffasink",
+    .init      = ffasink_init,
+    .priv_size = sizeof(FFASinkContext),
+    .query_formats = ffasink_query_formats,
+
+    .inputs    = (AVFilterPad[]) {{ .name           = "default",
+                                    .type           = AVMEDIA_TYPE_AUDIO,
+                                    .filter_samples = ffasink_filter_samples,
+                                    .min_perms      = AV_PERM_READ, },
+                                  { .name = NULL }},
+    .outputs   = (AVFilterPad[]) {{ .name = NULL }},
+};
+
+#endif /* CONFIG_AVFILTER */
