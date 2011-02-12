@@ -81,6 +81,8 @@ void avfilter_register_all(void)
     REGISTER_FILTER (VFLIP,       vflip,       vf);
     REGISTER_FILTER (YADIF,       yadif,       vf);
 
+    REGISTER_FILTER (ABUFFER,     abuffer,     asrc);
+
     REGISTER_FILTER (BUFFER,      buffer,      vsrc);
     REGISTER_FILTER (COLOR,       color,       vsrc);
     REGISTER_FILTER (FREI0R,      frei0r_src,  vsrc);
