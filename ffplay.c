@@ -2321,28 +2321,8 @@ static int stream_component_open(VideoState *is, int stream_index)
         return AVERROR_OPTION_NOT_FOUND;
     }
 
-    /* prepare audio output */
-    if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-        if(avctx->sample_rate <= 0 || avctx->channels <= 0){
-            fprintf(stderr, "Invalid sample rate or channel count\n");
-            return -1;
-        }
-        wanted_spec.freq = avctx->sample_rate;
-        wanted_spec.format = AUDIO_S16SYS;
-        wanted_spec.channels = avctx->channels;
-        wanted_spec.silence = 0;
-        wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
-        wanted_spec.callback = sdl_audio_callback;
-        wanted_spec.userdata = is;
-        if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
-            fprintf(stderr, "SDL_OpenAudio: %s\n", SDL_GetError());
-            return -1;
-        }
-        is->audio_hw_buf_size = spec.size;
-        is->audio_src_fmt= AV_SAMPLE_FMT_S16;
-    }
-
     ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
+
     switch(avctx->codec_type) {
     case AVMEDIA_TYPE_AUDIO:
         is->audio_stream = stream_index;
@@ -2359,12 +2339,38 @@ static int stream_component_open(VideoState *is, int stream_index)
 
         memset(&is->audio_pkt, 0, sizeof(is->audio_pkt));
 
+        if(avctx->sample_rate <= 0 || avctx->channels <= 0){
+            fprintf(stderr, "Invalid sample rate or channel count\n");
+            return -1;
+        }
+
 #if CONFIG_AVFILTER
         ret = configure_audio_filters(is, afilters);
         av_freep(&afilters);
         if (ret < 0)
             return ret;
 #endif
+        if (CONFIG_AVFILTER &&
+            is->out_audio_filter && is->out_audio_filter->inputs[0]) {
+            wanted_spec.freq = is->out_audio_filter->inputs[0]->sample_rate;
+            wanted_spec.channels =
+                av_get_channel_layout_nb_channels(
+                    is->out_audio_filter->inputs[0]->channel_layout);
+        } else {
+            wanted_spec.freq = avctx->sample_rate;
+            wanted_spec.channels = avctx->channels;
+        }
+        wanted_spec.format = AUDIO_S16SYS;
+        wanted_spec.silence = 0;
+        wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
+        wanted_spec.callback = sdl_audio_callback;
+        wanted_spec.userdata = is;
+        if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
+            fprintf(stderr, "SDL_OpenAudio: %s\n", SDL_GetError());
+            return -1;
+        }
+        is->audio_hw_buf_size = spec.size;
+        is->audio_src_fmt= AV_SAMPLE_FMT_S16;
 
         packet_queue_init(&is->audioq);
         SDL_PauseAudio(0);
