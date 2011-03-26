@@ -40,6 +40,7 @@ void avfilter_register_all(void)
     REGISTER_FILTER (ARESAMPLE,   aresample,   af);
     REGISTER_FILTER (EARWAX,      earwax,      af);
     REGISTER_FILTER (LADSPA,      ladspa,      af);
+    REGISTER_FILTER (SOX,         sox,         af);
 
     REGISTER_FILTER (ABUFFER,     abuffer,     asrc);
     REGISTER_FILTER (ANULLSRC,    anullsrc,    asrc);
