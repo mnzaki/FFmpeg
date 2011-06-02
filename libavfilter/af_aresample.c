@@ -128,7 +128,7 @@ static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref
     ResampleContext *resample = inlink->dst->priv;
     AVFilterLink *outlink = inlink->dst->outputs[0];
     AVFilterBufferRef *outsamplesref;
-    int i, nb_channels =
+    int i, j, nb_channels =
         av_get_channel_layout_nb_channels(insamplesref->audio->channel_layout),
         in_nb_samples     = insamplesref->audio->nb_samples,
         cached_nb_samples = in_nb_samples + resample->unconsumed_nb_samples,
@@ -136,6 +136,7 @@ static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref
         resampled_data_linesize = 4 * requested_out_nb_samples + 16;
     int16_t *cached_data[8] = { 0 };
     int16_t *resampled_data[8] = { 0 };
+    int16_t *datap;
     int out_nb_samples;
 
     for (i = 0; i < nb_channels; i++) {
@@ -148,10 +149,19 @@ static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref
 
     /* av_resample() works with planar audio buffer, perform rematrixing
      * for having planar audio buffers */
-    if (!insamplesref->audio->planar && nb_channels == 2) {
-        stereo_split(cached_data[0] + resample->unconsumed_nb_samples,
-                     cached_data[1] + resample->unconsumed_nb_samples,
-                     (int16_t *)insamplesref->data[0], in_nb_samples);
+    if (!insamplesref->audio->planar) {
+        if (nb_channels == 2) {
+            stereo_split(cached_data[0] + resample->unconsumed_nb_samples,
+                         cached_data[1] + resample->unconsumed_nb_samples,
+                         (int16_t *)insamplesref->data[0], in_nb_samples);
+        } else {
+            datap = (int16_t *)insamplesref->data[0];
+            in_nb_samples += resample->unconsumed_nb_samples;
+            for (i = resample->unconsumed_nb_samples; i < in_nb_samples; i++)
+                for (j = 0; j < nb_channels; j++)
+                    cached_data[j][i] = *(datap++);
+            in_nb_samples -= resample->unconsumed_nb_samples;
+        }
     } else {
         for (i = 0; i < nb_channels; i++)
             memcpy((uint8_t *)cached_data[i] + resample->unconsumed_nb_samples * 2,
@@ -188,20 +198,27 @@ static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref
     outlink->out_buf = outsamplesref;
 
     /* copy resampled data to the output samplesref */
-    if (!outsamplesref->audio->planar && nb_channels == 2) {
+    if (!outsamplesref->audio->planar) {
+        if(nb_channels == 2) {
         stereo_mux((int16_t *)outsamplesref->data[0],
                    resampled_data[0], resampled_data[1],
                    out_nb_samples);
+        } else {
+            datap = (int16_t *)outsamplesref->data[0];
+            for (i = 0; i < out_nb_samples; i++)
+                for (j = 0; j < nb_channels; j++)
+                    *datap++ = resampled_data[j][i];
+        }
     } else {
         for (i = 0; i < nb_channels; i++)
             memcpy(outsamplesref->data[i], resampled_data[i],
                    out_nb_samples * 2);
     }
 
-    av_freep(&cached_data[0]);
-    av_freep(&cached_data[1]);
-    av_freep(&resampled_data[0]);
-    av_freep(&resampled_data[1]);
+    for (i = 0; i < nb_channels; i++) {
+        av_freep(&cached_data[i]);
+        av_freep(&resampled_data[i]);
+    }
 
     avfilter_filter_samples(outlink, outsamplesref);
     avfilter_unref_buffer(insamplesref);
