@@ -1021,8 +1021,10 @@ static int ffasink_query_formats(AVFilterContext *ctx)
     enum AVSampleFormat sample_fmts[] = {
         priv->sample_fmt, AV_SAMPLE_FMT_NONE
     };
+    int64_t chlayouts[] = { priv->chlayout, -1 };
 
     avfilter_set_common_sample_formats(ctx, avfilter_make_format_list(sample_fmts));
+    avfilter_set_common_channel_layouts(ctx, avfilter_make_format64_list(chlayouts));
     return 0;
 }
 

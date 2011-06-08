@@ -1796,8 +1796,12 @@ static int input_query_audio_formats(AVFilterContext *ctx)
     enum AVSampleFormat sample_fmts[] = {
         priv->is->audio_st->codec->sample_fmt, SAMPLE_FMT_NONE
     };
+    int64_t chlayouts[] = {
+        priv->is->audio_st->codec->channel_layout, -1
+    };
 
     avfilter_set_common_sample_formats(ctx, avfilter_make_format_list(sample_fmts));
+    avfilter_set_common_channel_layouts(ctx, avfilter_make_format64_list(chlayouts));
     return 0;
 }
 
@@ -1833,7 +1837,10 @@ static AVFilter input_audio_filter = {
 static int configure_audio_filters(VideoState *is, const char *afilters)
 {
     AVFilterContext *asrc_ctx = NULL, *aout_ctx = NULL;
-    FFASinkContext ffasink_ctx = { .sample_fmt = AV_SAMPLE_FMT_S16 };
+    FFASinkContext ffasink_ctx = {
+        .sample_fmt = is->audio_st->codec->sample_fmt,
+        .chlayout = is->audio_st->codec->channel_layout,
+    };
     int ret;
 
     is->agraph = avfilter_graph_alloc();

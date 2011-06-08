@@ -285,6 +285,7 @@ int get_filtered_video_frame(AVFilterContext *sink, AVFrame *frame,
 
 typedef struct {
     enum AVSampleFormat sample_fmt;
+    int64_t chlayout;
 } FFASinkContext;
 
 extern AVFilter ffasink;
