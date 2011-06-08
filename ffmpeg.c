@@ -452,7 +452,9 @@ static int configure_audio_filters(AVInputStream *ist, AVOutputStream *ost)
     AVFilterContext *last_filter, *filter;
     AVCodecContext *icodec = ist->st->codec;
     AVCodecContext *ocodec = ost->st->codec;
-    FFASinkContext ffasink_ctx = { .sample_fmt = ocodec->sample_fmt };
+    FFASinkContext ffasink_ctx = {
+        .sample_fmt = ocodec->sample_fmt,
+        .chlayout = avcodec_guess_channel_layout(ocodec->channels, 0, NULL) };
     char args[255];
     int ret;
 
@@ -477,23 +479,6 @@ static int configure_audio_filters(AVInputStream *ist, AVOutputStream *ost)
         goto fail;
     last_filter = ost->input_audio_filter;
 
-    if (icodec->channels != ocodec->channels) {
-        int64_t ch_layout;
-        if      (ocodec->channels == 1) ch_layout = AV_CH_LAYOUT_MONO;
-        else if (ocodec->channels == 2) ch_layout = AV_CH_LAYOUT_STEREO;
-        else {
-            av_log(NULL, AV_LOG_ERROR, "Unsupported number of output channels %d specified\n",
-                   ocodec->channels);
-            return AVERROR(EINVAL);
-        }
-        snprintf(args, 255, "%d:%"PRId64, ocodec->sample_fmt, ch_layout);
-        if ((ret = avfilter_graph_create_filter(&filter, avfilter_get_by_name("aconvert"),
-                                                NULL, args, NULL, ost->agraph)) < 0)
-            return ret;
-        if ((ret = avfilter_link(last_filter, 0, filter, 0)) < 0)
-            return ret;
-        last_filter = filter;
-    }
     if (icodec->sample_rate != ocodec->sample_rate) {
         snprintf(args, sizeof(args), "%d", ocodec->sample_rate);
         if ((ret = avfilter_graph_create_filter(&filter, avfilter_get_by_name("aresample"),
@@ -1849,11 +1834,6 @@ static int output_packet(AVInputStream *ist, int ist_index,
                         av_assert0(ist->decoding_needed);
                         switch(ost->st->codec->codec_type) {
                         case AVMEDIA_TYPE_AUDIO:
-#if CONFIG_AVFILTER
-                            ist->st->codec->channel_layout = ost->samplesref->audio->channel_layout;
-                            ist->st->codec->channels =
-                                     av_get_channel_layout_nb_channels(ost->samplesref->audio->channel_layout);
-#endif
                             do_audio_out(os, ost, ist, decoded_data_buf, decoded_data_size);
                             break;
                         case AVMEDIA_TYPE_VIDEO:
