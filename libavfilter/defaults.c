@@ -244,6 +244,8 @@ int avfilter_default_query_formats(AVFilterContext *ctx)
     avfilter_set_common_pixel_formats(ctx, avfilter_all_formats(AVMEDIA_TYPE_VIDEO));
     avfilter_set_common_sample_formats(ctx, avfilter_all_formats(AVMEDIA_TYPE_AUDIO));
     avfilter_set_common_channel_layouts(ctx, avfilter_all_channel_layouts());
+    ctx->inputs[0]->out_packing = AVFILTER_PACKED_OR_PLANAR;
+    ctx->outputs[0]->in_packing = AVFILTER_PACKED_OR_PLANAR;
 
     return 0;
 }
