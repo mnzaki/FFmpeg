@@ -566,6 +566,12 @@ struct AVFilterContext {
     void *priv;                     ///< private data for use by the filter
 };
 
+enum AVFilterPacking {
+    AVFILTER_PACKED = 1,
+    AVFILTER_PLANAR,
+    AVFILTER_PACKED_OR_PLANAR
+};
+
 /**
  * A link between two filters. This contains pointers to the source and
  * destination filters between which this link exists, and the indexes of
@@ -593,9 +599,10 @@ struct AVFilterLink {
     int w;                      ///< agreed upon image width
     int h;                      ///< agreed upon image height
     AVRational sample_aspect_ratio; ///< agreed upon sample aspect ratio
-    /* These two parameters apply only to audio */
+    /* These three parameters apply only to audio */
     int64_t channel_layout;     ///< channel layout of current buffer (see libavutil/audioconvert.h)
     int64_t sample_rate;        ///< samples per second
+    int planar;                 ///< agreed upon packing mode of audio buffers
 
     int format;                 ///< agreed upon media format
 
@@ -611,6 +618,8 @@ struct AVFilterLink {
 
     AVFilterFormats *in_chlayouts;
     AVFilterFormats *out_chlayouts;
+    enum AVFilterPacking in_packing;
+    enum AVFilterPacking out_packing;
 
     /**
      * The buffer reference currently being sent across the link by the source
