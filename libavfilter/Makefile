@@ -18,6 +18,7 @@ OBJS = allfilters.o                                                     \
 
 OBJS-$(CONFIG_AVCODEC)                       += avcodec.o
 
+OBJS-$(CONFIG_ACONVERT_FILTER)               += af_aconvert.o
 OBJS-$(CONFIG_AFORMAT_FILTER)                += af_aformat.o
 OBJS-$(CONFIG_ANULL_FILTER)                  += af_anull.o
 
