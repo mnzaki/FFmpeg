@@ -30,133 +30,42 @@
 #include "avfilter.h"
 #include "libavcodec/audioconvert.h"
 
+#define SFMT_t uint8_t
+#define REMATRIX(FUNC) FUNC ## _u8
+#include "af_aconvert_rematrix.c"
+
+#define SFMT_t int16_t
+#define REMATRIX(FUNC) FUNC ## _s16
+#include "af_aconvert_rematrix.c"
+
+#define SFMT_t int32_t
+#define REMATRIX(FUNC) FUNC ## _s32
+#include "af_aconvert_rematrix.c"
+
+#define FLOATING
+
+#define SFMT_t float
+#define REMATRIX(FUNC) FUNC ## _flt
+#include "af_aconvert_rematrix.c"
+
+#define SFMT_t double
+#define REMATRIX(FUNC) FUNC ## _dbl
+#include "af_aconvert_rematrix.c"
+
 typedef struct {
     enum AVSampleFormat out_sample_fmt;     ///< output sample format
     int64_t out_chlayout;                   ///< output channel layout
 
     int  out_strides[8],
-         in_strides [8],
-         s16_strides[8];
+         in_strides [8];
 
-    AVFilterBufferRef *s16_samplesref;     ///< s16 buffer for rematrixing 
-    AVFilterBufferRef *mix_samplesref;     ///< s16 buffer after rematrixing
+    AVFilterBufferRef *mix_samplesref;     ///< rematrixed buffer
     AVFilterBufferRef *out_samplesref;     ///< output buffer after required conversions
 
-    AVAudioConvert *convert_to_s16_ctx;    ///< context for conversion to s16
     AVAudioConvert *convert_to_out_ctx;    ///< context for conversion to output sample format
 
-    void (*convert_chlayout) (uint8_t *out[], uint8_t *in[], int , int);
+    void (*convert_chlayout) (void*, void*, int , int);
 } AConvertContext;
-
-static void stereo_to_mono(uint8_t *out[], uint8_t *in[],
-                           int nb_samples, int in_channels)
-{
-    int16_t *input  = (int16_t *) in[0];
-    int16_t *output = (int16_t *) out[0];
-
-    while (nb_samples >= 4) {
-        output[0] = (input[0] + input[1]) >> 1;
-        output[1] = (input[2] + input[3]) >> 1;
-        output[2] = (input[4] + input[5]) >> 1;
-        output[3] = (input[6] + input[7]) >> 1;
-        output += 4;
-        input += 8;
-        nb_samples -= 4;
-    }
-    while (nb_samples > 0) {
-        output[0] = (input[0] + input[1]) >> 1;
-        output++;
-        input += 2;
-        nb_samples--;
-    }
-}
-
-static void mono_to_stereo(uint8_t *out[], uint8_t *in[],
-                           int nb_samples, int in_channels)
-{
-    int v;
-    int16_t *input  = (int16_t *) in[0];
-    int16_t *output = (int16_t *) out[0];
-
-    while (nb_samples >= 4) {
-        v = input[0]; output[0] = v; output[1] = v;
-        v = input[1]; output[2] = v; output[3] = v;
-        v = input[2]; output[4] = v; output[5] = v;
-        v = input[3]; output[6] = v; output[7] = v;
-        output += 8;
-        input += 4;
-        nb_samples -= 4;
-    }
-    while (nb_samples > 0) {
-        v = input[0]; output[0] = v; output[1] = v;
-        output += 2;
-        input += 1;
-        nb_samples--;
-    }
-}
-
-/**
- * This is for when we have more than 2 input channels, need to downmix to
- * stereo and do not have a conversion formula available.  We just use first
- * two input channels - left and right. This is a placeholder until more
- * conversion functions are written.
- */
-static void stereo_downmix(uint8_t *out[], uint8_t *in[],
-                           int nb_samples, int in_channels)
-{
-    int i;
-    int16_t *output = (int16_t *)out[0];
-    int16_t *input  = (int16_t *)out[0];
-
-    for (i = 0; i < nb_samples; i++) {
-        *output++ = *input++;
-        *output++ = *input++;
-        input += in_channels-2;
-    }
-}
-
-/**
- * This is for when we have more than 2 input channels, need to downmix to mono
- * and do not have a conversion formula available.  We just use first two input
- * channels - left and right. This is a placeholder until more conversion
- * functions are written.
- */
-static void mono_downmix(uint8_t *out[], uint8_t *in[],
-                         int nb_samples, int in_channels)
-{
-    int i;
-    int16_t *input  = (int16_t *) in[0];
-    int16_t *output = (int16_t *) out[0];
-    int left, right;
-
-    for (i = 0; i < nb_samples; i++) {
-        left = *input++;
-        right = *input++;
-        *output++ = (left+right)>>1;
-        input += in_channels-2;
-    }
-}
-
-/* Stereo to 5.1 output */
-static void ac3_5p1_mux(uint8_t *out[], uint8_t *in[],
-                        int nb_samples, int in_channels)
-{
-    int i;
-    int16_t *output = (int16_t *) out[0];
-    int16_t *input = (int16_t *) in[0];
-    int left, right;
-
-    for (i = 0; i < nb_samples; i++) {
-      left  = *input++;                 /* Grab next left sample */
-      right = *input++;                 /* Grab next right sample */
-      *output++ = left;                 /* left */
-      *output++ = right;                /* right */
-      *output++ = (left+right)>>1;      /* center */
-      *output++ = 0;                    /* low freq */
-      *output++ = 0;                    /* FIXME: left surround is either -3dB, -6dB or -9dB of stereo left */
-      *output++ = 0;                    /* FIXME: right surroud is either -3dB, -6dB or -9dB of stereo right */
-    }
-}
 
 static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
 {
@@ -204,11 +113,8 @@ static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
 static av_cold void uninit(AVFilterContext *ctx)
 {
     AConvertContext *aconvert = ctx->priv;
-    avfilter_unref_buffer(aconvert->s16_samplesref);
     avfilter_unref_buffer(aconvert->mix_samplesref);
     avfilter_unref_buffer(aconvert->out_samplesref);
-    if (aconvert->convert_to_s16_ctx)
-        av_audio_convert_free(aconvert->convert_to_s16_ctx);
     if (aconvert->convert_to_out_ctx)
         av_audio_convert_free(aconvert->convert_to_out_ctx);
 }
@@ -243,14 +149,44 @@ static int query_formats(AVFilterContext *ctx)
     return 0;
 }
 
+#define CHOOSE_FUNC_SFMT(FUNC)                              \
+    switch (inlink->format) {                               \
+    case AV_SAMPLE_FMT_U8:                                  \
+        aconvert->convert_chlayout = FUNC ## _u8;  break;   \
+    case AV_SAMPLE_FMT_S16:                                 \
+        aconvert->convert_chlayout = FUNC ## _s16; break;   \
+    case AV_SAMPLE_FMT_S32:                                 \
+        aconvert->convert_chlayout = FUNC ## _s32; break;   \
+    case AV_SAMPLE_FMT_FLT:                                 \
+        aconvert->convert_chlayout = FUNC ## _flt; break;   \
+    case AV_SAMPLE_FMT_DBL:                                 \
+        aconvert->convert_chlayout = FUNC ## _dbl; break;   \
+    }
+
+#define CHOOSE_FUNC(OUT, FUNC)                              \
+    if (aconvert->out_chlayout == OUT) {                    \
+        if (inlink->planar)                                 \
+            CHOOSE_FUNC_SFMT(FUNC ## _planar)               \
+        else                                                \
+            CHOOSE_FUNC_SFMT(FUNC ## _packed)               \
+    }
+
+#define CHOOSE_FUNC2(IN, OUT, FUNC)                         \
+    if (inlink->channel_layout == IN &&                     \
+        aconvert->out_chlayout == OUT) {                    \
+        if (inlink->planar)                                 \
+            CHOOSE_FUNC_SFMT(FUNC ## _planar)               \
+        else                                                \
+            CHOOSE_FUNC_SFMT(FUNC ## _packed)               \
+    }
+
 static int config_output(AVFilterLink *outlink)
 {
     AVFilterLink *inlink = outlink->src->inputs[0];
     AConvertContext *aconvert = outlink->src->priv;
     char buf1[32], buf2[32];
 
-    /* if not specified in args, then use the format and layout
-     * of the output */
+    /* if not specified in args, use the format and layout of the output */
     if (aconvert->out_sample_fmt == AV_SAMPLE_FMT_NONE)
         aconvert->out_sample_fmt = outlink->format;
     if (aconvert->out_chlayout == -1)
@@ -264,24 +200,24 @@ static int config_output(AVFilterLink *outlink)
            av_get_sample_fmt_name(inlink ->format), buf1,
            av_get_sample_fmt_name(outlink->format), buf2);
 
-    if      (inlink->channel_layout == AV_CH_LAYOUT_STEREO &&
-             aconvert->out_chlayout == AV_CH_LAYOUT_MONO)
-        aconvert->convert_chlayout  =  stereo_to_mono;
-    else if (inlink->channel_layout == AV_CH_LAYOUT_STEREO &&
-             aconvert->out_chlayout == AV_CH_LAYOUT_5POINT1)
-        aconvert->convert_chlayout  =  ac3_5p1_mux;
-    else if (inlink->channel_layout == AV_CH_LAYOUT_MONO &&
-             aconvert->out_chlayout == AV_CH_LAYOUT_STEREO)
-        aconvert->convert_chlayout  =  mono_to_stereo;
-    else if (aconvert->out_chlayout == AV_CH_LAYOUT_MONO)
-        aconvert->convert_chlayout  =  mono_downmix;
-    else if (aconvert->out_chlayout == AV_CH_LAYOUT_STEREO)
-        aconvert->convert_chlayout  =  stereo_downmix;
-    else {
+    /* handle stereo_to_mono separately because there is no planar version
+     * as it is handled by mono_downmix_planar */
+    if (!inlink->planar &&
+         inlink->channel_layout == AV_CH_LAYOUT_STEREO &&
+         aconvert->out_chlayout == AV_CH_LAYOUT_MONO)
+        CHOOSE_FUNC_SFMT(stereo_to_mono_packed);
+
+         CHOOSE_FUNC2(AV_CH_LAYOUT_MONO,   AV_CH_LAYOUT_STEREO,  mono_to_stereo)
+    else CHOOSE_FUNC2(AV_CH_LAYOUT_STEREO, AV_CH_LAYOUT_5POINT1, ac3_5p1_mux)
+    else CHOOSE_FUNC(                      AV_CH_LAYOUT_STEREO,  stereo_downmix)
+    else CHOOSE_FUNC(                      AV_CH_LAYOUT_MONO,    mono_downmix)
+
+    if (!aconvert->convert_chlayout) {
         av_log(outlink->src, AV_LOG_ERROR,
                 "Unsupported channel layout conversion requested!\n");
         return AVERROR(EINVAL);
     }
+
     return 0;
 }
 
@@ -290,7 +226,7 @@ static void init_buffers(AVFilterLink *inlink, int nb_samples)
     AConvertContext *aconvert = inlink->dst->priv;
     int i, chans;
 
-    // Free all The things
+    // Free All the things
     uninit(inlink->dst);
 
     // The input buffer
@@ -300,27 +236,11 @@ static void init_buffers(AVFilterLink *inlink, int nb_samples)
     for (i = 1; i < chans; i++)
         aconvert->in_strides[i] = aconvert->in_strides[0];
 
+    // The rematrixed buffer
     if (inlink->channel_layout != aconvert->out_chlayout) {
-        for (i = 0; i < chans; i++)
-            aconvert->s16_strides[i] = 2;
-
-        // S16 buffer for later rematrixing. FIXME?
-        if (inlink->format != AV_SAMPLE_FMT_S16) {
-            aconvert->convert_to_s16_ctx =
-                    av_audio_convert_alloc(AV_SAMPLE_FMT_S16, chans,
-                                           inlink->format, chans, NULL, 0);
-            aconvert->s16_samplesref = avfilter_get_audio_buffer(inlink,
-                                           AV_PERM_WRITE|AV_PERM_REUSE2,
-                                           AV_SAMPLE_FMT_S16,
-                                           nb_samples,
-                                           inlink->channel_layout,
-                                           inlink->planar);
-        }
- 
-        // The rematrixed buffer
         aconvert->mix_samplesref = avfilter_get_audio_buffer(inlink,
                                            AV_PERM_WRITE|AV_PERM_REUSE2,
-                                           AV_SAMPLE_FMT_S16,
+                                           inlink->format,
                                            nb_samples,
                                            aconvert->out_chlayout,
                                            inlink->dst->outputs[0]->planar);
@@ -331,9 +251,7 @@ static void init_buffers(AVFilterLink *inlink, int nb_samples)
             av_get_channel_layout_nb_channels(aconvert->out_chlayout) : 1;
     aconvert->convert_to_out_ctx =
             av_audio_convert_alloc(aconvert->out_sample_fmt, chans,
-                                   aconvert->s16_samplesref ?
-                                       AV_SAMPLE_FMT_S16 : inlink->format,
-                                   chans, NULL, 0);
+                                   inlink->format, chans, NULL, 0);
 
     aconvert->out_samplesref = avfilter_get_audio_buffer(inlink,
                                    AV_PERM_WRITE|AV_PERM_REUSE2,
@@ -366,21 +284,9 @@ static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref
         if (aconvert->mix_samplesref) {
             chans = av_get_channel_layout_nb_channels(
                         curbuf->audio->channel_layout);
-            // We have to rematrix, convert to s16 first if needed.
-            if (aconvert->s16_samplesref) {
-                av_audio_convert(aconvert->convert_to_s16_ctx,
-                                 (void * const *) aconvert->s16_samplesref->data,
-                                 aconvert->s16_strides,
-                                 (const void * const *) curbuf->data,
-                                 aconvert->in_strides,
-                                 curbuf->audio->nb_samples *
-                                    (curbuf->audio->planar ? 1 : chans));
 
-                curbuf = aconvert->s16_samplesref;
-            }
-
-            aconvert->convert_chlayout(aconvert->mix_samplesref->data,
-                                       curbuf->data,
+            aconvert->convert_chlayout(aconvert->mix_samplesref->data[0],
+                                       curbuf->data[0],
                                        curbuf->audio->nb_samples,
                                        chans);
 
@@ -395,8 +301,7 @@ static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref
                          (void * const *) aconvert->out_samplesref->data,
                          aconvert->out_strides,
                          (const void * const *) curbuf->data,
-                         curbuf == aconvert->mix_samplesref ?
-                             aconvert->s16_strides : aconvert->in_strides,
+                         aconvert->in_strides,
                          curbuf->audio->nb_samples * 
                             (curbuf->audio->planar ? 1 : chans));
 
