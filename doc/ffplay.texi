@@ -81,6 +81,11 @@ pressing the key @key{w}.
 the input video.
 Use the option "-filters" to show all the available filters (including
 also sources and sinks).
+@item -af @var{filter_graph}
+@var{filter_graph} is a description of the filter graph to apply to
+the input audio.
+Use the option "-filters" to show all the available filters (including
+sources and sinks).
 
 @item -i @var{input_file}
 Read @var{input_file}.
