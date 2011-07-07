@@ -43,6 +43,7 @@
 # include "libavfilter/avfilter.h"
 # include "libavfilter/avfiltergraph.h"
 # include "libavfilter/vsink_buffer.h"
+# include "libavfilter/asrc_abuffer.h"
 # include "libavfilter/asink_abuffer.h"
 #endif
 
@@ -207,6 +208,7 @@ typedef struct VideoState {
 
 #if CONFIG_AVFILTER
     AVFilterContext *out_video_filter;          ///<the last filter in the video chain
+    AVFilterContext *in_audio_filter;           ///<the first filter in the audio chain
     AVFilterContext *out_audio_filter;          ///<the last filter in the audio chain
     AVFilterGraph *agraph;
 #endif
@@ -1733,124 +1735,31 @@ the_end:
     return ret;
 }
 
-typedef struct {
-    VideoState *is;
-} AudioFilterPriv;
-
-static int input_audio_init(AVFilterContext *ctx, const char *args, void *opaque)
-{
-    AudioFilterPriv *priv = ctx->priv;
-
-    if (!opaque) return AVERROR(EINVAL);
-
-    priv->is = opaque;
-
-    return 0;
-}
-
-static void samples_buf_free(AVFilterBuffer *ptr)
-{
-    av_free(ptr);
-}
-
-static int input_request_samples(AVFilterLink *inlink)
-{
-    AudioFilterPriv *priv = inlink->src->priv;
-    AVFilterBufferRef *samplesref;
-    AVCodecContext *avctx;
-    double pts = 0.0;
-    int buf_size = audio_decode_frame(priv->is, &pts);
-    uint8_t *data[8];
-    int linesize[8], nb_samples;
-
-    avctx = priv->is->audio_st->codec;
-    if (buf_size <= 0)
-        return AVERROR(EINVAL);
-
-    if (!avctx->channel_layout)
-        avctx->channel_layout = avcodec_guess_channel_layout(avctx->channels, 0, NULL);
-
-    /* FIXME Currently audio streams seem to have no info on
-       planar/packed, assuming packed */
-    nb_samples = buf_size /
-        ((av_get_bits_per_sample_fmt(avctx->sample_fmt) + 7) >> 3) / avctx->channels;
-    av_samples_fill_arrays(data, linesize,
-                           priv->is->audio_buf, avctx->channels, buf_size, 
-                           avctx->sample_fmt, 0, 16);
-    samplesref =
-        avfilter_get_audio_buffer_ref_from_arrays(data, linesize, AV_PERM_WRITE,
-                                                  nb_samples, avctx->sample_fmt,
-                                                  avctx->channel_layout, 0);
-    samplesref->buf->free = samples_buf_free;
-
-    // AVFilterBufferRef stores pts with timebase 1/samplerate.
-    samplesref->pts                = pts * (double)avctx->sample_rate;
-    samplesref->audio->sample_rate = avctx->sample_rate;
-    avfilter_filter_samples(inlink, samplesref);
-
-    return 0;
-}
-
-static int input_query_audio_formats(AVFilterContext *ctx)
-{
-    AudioFilterPriv *priv = ctx->priv;
-    enum AVSampleFormat sample_fmts[] = {
-        priv->is->audio_st->codec->sample_fmt, SAMPLE_FMT_NONE
-    };
-    int64_t chlayouts[] = {
-        priv->is->audio_st->codec->channel_layout, -1
-    };
-
-    avfilter_set_common_sample_formats(ctx, avfilter_make_format_list(sample_fmts));
-    avfilter_set_common_channel_layouts(ctx, avfilter_make_format64_list(chlayouts));
-    return 0;
-}
-
-static int input_config_audio_props(AVFilterLink *inlink)
-{
-    FilterPriv *priv  = inlink->src->priv;
-    AVCodecContext *avctx = priv->is->audio_st->codec;
-
-    if (!avctx->channel_layout)
-        avctx->channel_layout = avcodec_guess_channel_layout(avctx->channels, 0, NULL);
-    inlink->channel_layout = avctx->channel_layout;
-    inlink->sample_rate = avctx->sample_rate;
-    return 0;
-}
-
-static AVFilter input_audio_filter = {
-    .name      = "ffplay_audio_input",
-
-    .priv_size = sizeof(AudioFilterPriv),
-
-    .init      = input_audio_init,
-
-    .query_formats = input_query_audio_formats,
-
-    .inputs    = (AVFilterPad[]) {{ .name = NULL }},
-    .outputs   = (AVFilterPad[]) {{ .name = "default",
-                                    .type = AVMEDIA_TYPE_AUDIO,
-                                    .request_frame = input_request_samples,
-                                    .config_props  = input_config_audio_props, },
-                                  { .name = NULL }},
-};
-
-static int configure_audio_filters(VideoState *is, const char *afilters)
+static int configure_audio_filters(VideoState *is)
 {
     AVFilterContext *filt_asrc = NULL, *filt_aout = NULL;
-    ABufferSinkContext abuffersink = {
-        .sample_fmt = AV_SAMPLE_FMT_S16,
-        .channel_layout = is->audio_st->codec->channel_layout,
-    };
+    AVCodecContext * const avctx = is->audio_st->codec;
+    char args[256];
+    ABufferSinkContext abuffersink = { .sample_fmt = AV_SAMPLE_FMT_S16 };
     int ret;
 
     is->agraph = avfilter_graph_alloc();
-    if ((ret = avfilter_graph_create_filter(&filt_asrc, &input_audio_filter, "asrc",
-                                            NULL, is, is->agraph)) < 0)
+
+    if (!avctx->channel_layout)
+        avctx->channel_layout = avcodec_guess_channel_layout(avctx->channels, 0, NULL);
+    abuffersink.channel_layout = avctx->channel_layout;
+
+    snprintf(args, sizeof(args), "%d:%"PRId64":%d",
+             avctx->sample_fmt, avctx->channel_layout, avctx->sample_rate);
+    if ((ret = avfilter_graph_create_filter(&filt_asrc,
+                                             avfilter_get_by_name("abuffer"), "asrc",
+                                             args, NULL, is->agraph)) < 0)
         goto fail;
+
+    //FIXME use args instead of a ctx?
     if ((ret = avfilter_graph_create_filter(&filt_aout,
-                                            avfilter_get_by_name("abuffersink"), "aout",
-                                            NULL, &abuffersink, is->agraph)) < 0)
+                                             avfilter_get_by_name("abuffersink"), "aout",
+                                             NULL, &abuffersink, is->agraph)) < 0)
         goto fail;
 
     if (afilters) {
@@ -1862,6 +1771,7 @@ static int configure_audio_filters(VideoState *is, const char *afilters)
 
         if ((ret = avfilter_graph_parse(is->agraph, afilters, &inputs, &outputs, NULL)) < 0)
             goto fail;
+        av_freep(&afilters);
     } else {
         if ((ret = avfilter_link(filt_asrc, 0, filt_aout, 0)) < 0)
             goto fail;
@@ -1869,6 +1779,7 @@ static int configure_audio_filters(VideoState *is, const char *afilters)
 
     if ((ret = avfilter_graph_config(is->agraph, NULL)) < 0)
         goto fail;
+    is->in_audio_filter = filt_asrc;
     is->out_audio_filter = filt_aout;
     return 0;
 
@@ -2237,22 +2148,39 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
 
     while (len > 0) {
         if (is->audio_buf_index >= is->audio_buf_size) {
-#if CONFIG_AVFILTER
-            av_asink_abuffer_get_audio_buffer_ref(is->out_audio_filter, &samplesref);
-            is->audio_buf = samplesref->data[0];
-            audio_size = samplesref->audio->nb_samples *
-                av_get_channel_layout_nb_channels(samplesref->audio->channel_layout) *
-                av_get_bytes_per_sample(samplesref->format);
-            pts = samplesref->pts; //FIXME!
-#else
            audio_size = audio_decode_frame(is, &pts);
-#endif
            if (audio_size < 0) {
                 /* if error, just output silence */
                is->audio_buf = is->audio_buf1;
                is->audio_buf_size = 1024;
                memset(is->audio_buf, 0, is->audio_buf_size);
            } else {
+
+#if CONFIG_AVFILTER
+                const AVCodecContext *avctx = is->audio_st->codec;
+                uint8_t *data[8];
+                int linesizes[8];
+
+                /* FIXME Currently audio streams seem to have no info on
+                   planar/packed, assuming packed */
+                len1 = audio_size /
+                        av_get_bytes_per_sample(avctx->sample_fmt) / avctx->channels;
+                av_samples_fill_arrays(data, linesizes,
+                        is->audio_buf, avctx->channels, len1,
+                        avctx->sample_fmt, 0, 16); //FIXME align?
+                /* inject the buffer into the filter graph
+                 * note that AVFilterBufferRef stores pts with timebase 1/samplerate */
+                av_asrc_buffer_add_samples(is->in_audio_filter, data, linesizes, len1,
+                        avctx->sample_fmt, avctx->channel_layout, 0, pts * (double)avctx->sample_rate);
+                av_asink_abuffer_get_audio_buffer_ref(is->out_audio_filter, &samplesref);
+                pts = samplesref->pts / (double)avctx->sample_rate;
+
+                is->audio_buf = samplesref->data[0];
+                audio_size = samplesref->audio->nb_samples *
+                    av_get_channel_layout_nb_channels(samplesref->audio->channel_layout) *
+                    av_get_bytes_per_sample(samplesref->format);
+#endif
+
                if (is->show_mode != SHOW_MODE_VIDEO)
                    update_sample_display(is, (int16_t *)is->audio_buf, audio_size);
                audio_size = synchronize_audio(is, (int16_t *)is->audio_buf, audio_size,
@@ -2343,11 +2271,10 @@ static int stream_component_open(VideoState *is, int stream_index)
         }
 
 #if CONFIG_AVFILTER
-        ret = configure_audio_filters(is, afilters);
-        av_freep(&afilters);
-        if (ret < 0)
+        if((ret = configure_audio_filters(is)) < 0)
             return ret;
 #endif
+
         if (CONFIG_AVFILTER &&
             is->out_audio_filter && is->out_audio_filter->inputs[0]) {
             wanted_spec.freq = is->out_audio_filter->inputs[0]->sample_rate;
