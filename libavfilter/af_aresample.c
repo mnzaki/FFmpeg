@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2011 Stefano Sabatini
+ * Copyright (c) 2011 Mina Nagy Zaki
  *
  * This file is part of FFmpeg.
  *
@@ -26,13 +27,18 @@
 #include "libavutil/eval.h"
 #include "libavcodec/avcodec.h"
 #include "avfilter.h"
+#include "interleave.h"
 
 typedef struct {
     struct AVResampleContext *resample;
     int out_rate;
     double ratio; ///< output conversion ratio
-    int unconsumed_nb_samples;
-    int16_t *unconsumed_data[8];
+    AVFilterBufferRef *outsamplesref;
+    int unconsumed_nb_samples,
+        cached_nb_samples;
+    int16_t *cached_data[8],
+            *resampled_data[8];
+
 } ResampleContext;
 
 static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
@@ -60,6 +66,15 @@ static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
 static av_cold void uninit(AVFilterContext *ctx)
 {
     ResampleContext *resample = ctx->priv;
+    int nb_channels =
+        av_get_channel_layout_nb_channels(
+            resample->outsamplesref->audio->channel_layout);
+    avfilter_unref_buffer(resample->outsamplesref);
+
+    while (nb_channels--) {
+        av_freep(&resample->cached_data[nb_channels]);
+        av_freep(&resample->resampled_data[nb_channels]);
+    }
 
     av_resample_close(resample->resample);
     resample->resample = NULL;
@@ -90,7 +105,7 @@ static int config_props(AVFilterLink *outlink)
 
 static int query_formats(AVFilterContext *ctx)
 {
-    enum AVSampleFormat sample_fmts[] = {
+    const enum AVSampleFormat sample_fmts[] = {
         AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_NONE
     };
 
@@ -99,139 +114,94 @@ static int query_formats(AVFilterContext *ctx)
     return 0;
 }
 
-/**
- * Split a packed stereo plane into two distinct mono planes.
- */
-static void stereo_split(int16_t *output1, int16_t *output2,
-                         int16_t *input, int nb_samples)
-{
-    while (nb_samples--) {
-        *output1++ = *input++;
-        *output2++ = *input++;
-    }
-}
-
-/**
- * Mux two distinct mono planes to a packed stereo plane.
- */
-static void stereo_mux(int16_t *output,
-                       int16_t *input1, int16_t *input2, int nb_samples)
-{
-    while (nb_samples--) {
-        *output++ = *input1++;
-        *output++ = *input2++;
-    }
-}
-
 static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref)
 {
-    ResampleContext *resample = inlink->dst->priv;
-    AVFilterLink *outlink = inlink->dst->outputs[0];
-    AVFilterBufferRef *outsamplesref;
-    int i, j, nb_channels =
-        av_get_channel_layout_nb_channels(insamplesref->audio->channel_layout),
-        in_nb_samples     = insamplesref->audio->nb_samples,
-        cached_nb_samples = in_nb_samples + resample->unconsumed_nb_samples,
+    ResampleContext *resample    = inlink->dst->priv;
+    AVFilterLink * const outlink = inlink->dst->outputs[0];
+    int i,
+        in_nb_samples            = insamplesref->audio->nb_samples,
+        cached_nb_samples        = in_nb_samples + resample->unconsumed_nb_samples,
         requested_out_nb_samples = resample->ratio * cached_nb_samples,
-        resampled_data_linesize = 4 * requested_out_nb_samples + 16;
-    int16_t *cached_data[8] = { 0 };
-    int16_t *resampled_data[8] = { 0 };
-    int16_t *datap;
-    int out_nb_samples;
+        nb_channels              =
+            av_get_channel_layout_nb_channels(inlink->channel_layout);
+    if (cached_nb_samples > resample->cached_nb_samples) {
+        for (i = 0; i < nb_channels; i++) {
+            resample->cached_data[i]    =
+                av_realloc(resample->cached_data[i], cached_nb_samples * sizeof(int16_t));
+            resample->resampled_data[i] =
+                av_realloc(resample->resampled_data[i], 4 * requested_out_nb_samples + 16);
 
-    for (i = 0; i < nb_channels; i++) {
-        cached_data[i]    = av_malloc(cached_nb_samples * 2);
-        resampled_data[i] = av_malloc(resampled_data_linesize);
-        /* copy unconsumed data to planar_data */
-        memcpy(cached_data[i], resample->unconsumed_data[i],
-               resample->unconsumed_nb_samples * 2);
+            if (resample->cached_data[i] == NULL || resample->resampled_data[i] == NULL)
+                return;
+        }
+        if (resample->outsamplesref)
+            avfilter_unref_buffer(resample->outsamplesref);
+        resample->outsamplesref = avfilter_get_audio_buffer(outlink,
+                                                            AV_PERM_WRITE | AV_PERM_REUSE2,
+                                                            inlink->format,
+                                                            requested_out_nb_samples,
+                                                            insamplesref->audio->channel_layout,
+                                                            insamplesref->audio->planar);
+        resample->outsamplesref->audio->sample_rate = outlink->sample_rate;
+        resample->cached_nb_samples = cached_nb_samples;
+        outlink->out_buf = resample->outsamplesref;
     }
 
-    /* av_resample() works with planar audio buffer, perform rematrixing
-     * for having planar audio buffers */
-    if (!insamplesref->audio->planar) {
-        if (nb_channels == 2) {
-            stereo_split(cached_data[0] + resample->unconsumed_nb_samples,
-                         cached_data[1] + resample->unconsumed_nb_samples,
-                         (int16_t *)insamplesref->data[0], in_nb_samples);
-        } else {
-            datap = (int16_t *)insamplesref->data[0];
-            in_nb_samples += resample->unconsumed_nb_samples;
-            for (i = resample->unconsumed_nb_samples; i < in_nb_samples; i++)
-                for (j = 0; j < nb_channels; j++)
-                    cached_data[j][i] = *(datap++);
-            in_nb_samples -= resample->unconsumed_nb_samples;
-        }
+    /* av_resample() works with planar audio buffers */
+    if (!inlink->planar && nb_channels > 1) {
+        int16_t *out[8];
+        for (i = 0; i < nb_channels; i++)
+            out[i] = resample->cached_data[i] + resample->unconsumed_nb_samples;
+
+        deinterleave(out, (int16_t *)insamplesref->data[0],
+                     nb_channels, in_nb_samples);
     } else {
         for (i = 0; i < nb_channels; i++)
-            memcpy((uint8_t *)cached_data[i] + resample->unconsumed_nb_samples * 2,
+            memcpy(resample->cached_data[i] + resample->unconsumed_nb_samples,
                    insamplesref->data[i],
-                   in_nb_samples * 2);
+                   in_nb_samples * sizeof(int16_t));
     }
 
     for (i = 0; i < nb_channels; i++) {
-        int consumed_in_nb_samples;
-        int is_last = i+1 == nb_channels;
+        int consumed;
+        const int is_last = i+1 == nb_channels;
 
-        out_nb_samples =
+        resample->outsamplesref->audio->nb_samples =
             av_resample(resample->resample,
-                        resampled_data[i], cached_data[i],
-                        &consumed_in_nb_samples,
+                        resample->resampled_data[i], resample->cached_data[i],
+                        &consumed,
                         cached_nb_samples,
                         requested_out_nb_samples, is_last);
 
-        /* save unconsumed data for the next round */
-        resample->unconsumed_nb_samples = cached_nb_samples - consumed_in_nb_samples;
-        resample->unconsumed_data[i] =
-            av_realloc(resample->unconsumed_data[i], resample->unconsumed_nb_samples * 2);
-        memcpy(resample->unconsumed_data[i],
-               cached_data[i] + consumed_in_nb_samples,
-               resample->unconsumed_nb_samples * 2);
+        /* move unconsumed data back to the beginning of the cache */
+        resample->unconsumed_nb_samples = cached_nb_samples - consumed;
+        memmove(resample->cached_data[i], resample->cached_data[i] + consumed,
+                resample->unconsumed_nb_samples * sizeof(int16_t));
     }
 
-    outsamplesref = avfilter_get_audio_buffer(outlink, AV_PERM_WRITE,
-                                              inlink->format,
-                                              out_nb_samples,
-                                              insamplesref->audio->channel_layout,
-                                              insamplesref->audio->planar);
-    outsamplesref->audio->sample_rate = outlink->sample_rate;
-    outlink->out_buf = outsamplesref;
 
     /* copy resampled data to the output samplesref */
-    if (!outsamplesref->audio->planar) {
-        if(nb_channels == 2) {
-        stereo_mux((int16_t *)outsamplesref->data[0],
-                   resampled_data[0], resampled_data[1],
-                   out_nb_samples);
-        } else {
-            datap = (int16_t *)outsamplesref->data[0];
-            for (i = 0; i < out_nb_samples; i++)
-                for (j = 0; j < nb_channels; j++)
-                    *datap++ = resampled_data[j][i];
-        }
+    if (!inlink->planar && nb_channels > 1) {
+        interleave((int16_t *)resample->outsamplesref->data[0],
+                   resample->resampled_data,
+                   nb_channels, resample->outsamplesref->audio->nb_samples);
     } else {
         for (i = 0; i < nb_channels; i++)
-            memcpy(outsamplesref->data[i], resampled_data[i],
-                   out_nb_samples * 2);
+            memcpy(resample->outsamplesref->data[i], resample->resampled_data[i],
+                   resample->outsamplesref->audio->nb_samples * sizeof(int16_t));
     }
 
-    for (i = 0; i < nb_channels; i++) {
-        av_freep(&cached_data[i]);
-        av_freep(&resampled_data[i]);
-    }
-
-    avfilter_filter_samples(outlink, outsamplesref);
+    avfilter_filter_samples(outlink, avfilter_ref_buffer(resample->outsamplesref, ~0));
     avfilter_unref_buffer(insamplesref);
 }
 
 AVFilter avfilter_af_aresample = {
-    .name        = "aresample",
-    .description = NULL_IF_CONFIG_SMALL("Resample input audio."),
-    .init      = init,
-    .uninit    = uninit,
+    .name          = "aresample",
+    .description   = NULL_IF_CONFIG_SMALL("Resample audio data."),
+    .init          = init,
+    .uninit        = uninit,
     .query_formats = query_formats,
-
-    .priv_size = sizeof(ResampleContext),
+    .priv_size     = sizeof(ResampleContext),
 
     .inputs    = (AVFilterPad[]) {{ .name             = "default",
                                     .type             = AVMEDIA_TYPE_AUDIO,
