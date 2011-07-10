@@ -30,9 +30,9 @@
 #endif
 
 #define REMATRIX_FUNC_PACKED(FUNC) static void REMATRIX(FUNC) \
-    (SFMT_t *out,   SFMT_t *in, int nb_samples, int in_channels)
+    (SFMT_t *out,   SFMT_t *in, int nb_samples)
 #define REMATRIX_FUNC_PLANAR(FUNC) static void REMATRIX(FUNC) \
-    (SFMT_t *outp[], SFMT_t *inp[], int nb_samples, int in_channels)
+    (SFMT_t *outp[], SFMT_t *inp[], int nb_samples)
 
 REMATRIX_FUNC_PACKED(stereo_to_mono_packed)
 {
@@ -123,7 +123,8 @@ REMATRIX_FUNC_PLANAR(stereo_downmix_planar)
  * channels - left and right. This is a placeholder until more conversion
  * functions are written.
  */
-REMATRIX_FUNC_PACKED(mono_downmix_packed)
+mono_downmix_packed
+    (SFMT_t *out, SFMT_t *in, int nb_samples, int in_channels)
 {
     while (nb_samples--) {
         out[0] = (in[0] + in[1]) DIV2;
@@ -132,7 +133,8 @@ REMATRIX_FUNC_PACKED(mono_downmix_packed)
     }
 }
 
-REMATRIX_FUNC_PLANAR(mono_downmix_planar)
+mono_downmix_planar
+    (SFMT_t *outp[], SFMT_t *inp[], int nb_samples, int in_channels)
 {
     SFMT_t *in[2], *out = outp[0];
     in[0] = inp[0];

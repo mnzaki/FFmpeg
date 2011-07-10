@@ -53,6 +53,7 @@
 #include "af_aconvert_rematrix.c"
 
 typedef struct {
+    int nb_samples;                         ///< current size of buffers
     enum AVSampleFormat out_sample_fmt;     ///< output sample format
     int64_t out_chlayout;                   ///< output channel layout
 
@@ -62,7 +63,7 @@ typedef struct {
     AVFilterBufferRef *mix_samplesref;     ///< rematrixed buffer
     AVFilterBufferRef *out_samplesref;     ///< output buffer after required conversions
 
-    AVAudioConvert *convert_to_out_ctx;    ///< context for conversion to output sample format
+    AVAudioConvert *audioconvert_ctx;      ///< context for conversion to output sample format
 
     void (*convert_chlayout) (void*, void*, int , int);
 } AConvertContext;
@@ -70,10 +71,10 @@ typedef struct {
 static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
 {
     AConvertContext *aconvert = ctx->priv;
-    char sample_fmt_str[8] = "", ch_layout_str[32] = "";
+    char sample_fmt_str[8] = "", chlayout_str[32] = "";
 
     if (args)
-        sscanf(args, "%8[^:]:%32s", sample_fmt_str, ch_layout_str);
+        sscanf(args, "%8[^:]:%32s", sample_fmt_str, chlayout_str);
 
     aconvert->out_sample_fmt =
         *sample_fmt_str ? av_get_sample_fmt(sample_fmt_str) : AV_SAMPLE_FMT_NONE;
@@ -91,18 +92,18 @@ static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
         }
     }
 
-    aconvert->out_chlayout = *ch_layout_str ?
-                                  av_get_channel_layout(ch_layout_str) : -1;
+    aconvert->out_chlayout = *chlayout_str ?
+                                  av_get_channel_layout(chlayout_str) : -1;
 
-    if (*ch_layout_str && aconvert->out_chlayout < AV_CH_LAYOUT_STEREO) {
+    if (*chlayout_str && aconvert->out_chlayout < AV_CH_LAYOUT_STEREO) {
         /* -1 is a valid value for out_chlayout and indicates no change
          * in channel layout. */
         char *tail;
-        aconvert->out_chlayout = strtol(ch_layout_str, &tail, 10);
+        aconvert->out_chlayout = strtol(chlayout_str, &tail, 10);
         if (*tail || (aconvert->out_chlayout < AV_CH_LAYOUT_STEREO &&
                       aconvert->out_chlayout != -1)) {
             av_log(ctx, AV_LOG_ERROR, "Invalid channel layout %s\n",
-                   ch_layout_str);
+                   chlayout_str);
             return AVERROR(EINVAL);
         }
     }
@@ -115,8 +116,8 @@ static av_cold void uninit(AVFilterContext *ctx)
     AConvertContext *aconvert = ctx->priv;
     avfilter_unref_buffer(aconvert->mix_samplesref);
     avfilter_unref_buffer(aconvert->out_samplesref);
-    if (aconvert->convert_to_out_ctx)
-        av_audio_convert_free(aconvert->convert_to_out_ctx);
+    if (aconvert->audioconvert_ctx)
+        av_audio_convert_free(aconvert->audioconvert_ctx);
 }
 
 static int query_formats(AVFilterContext *ctx)
@@ -224,89 +225,100 @@ static int config_output(AVFilterLink *outlink)
 static void init_buffers(AVFilterLink *inlink, int nb_samples)
 {
     AConvertContext *aconvert = inlink->dst->priv;
-    int i, chans;
+    AVFilterLink * const outlink = inlink->dst->outputs[0];
 
-    // Free All the things
     uninit(inlink->dst);
+    
+    aconvert->nb_samples = nb_samples;
 
-    // The input buffer
-    chans = inlink->planar ?
-            av_get_channel_layout_nb_channels(inlink->channel_layout) : 1;
-    aconvert->in_strides[0] = av_get_bytes_per_sample(inlink->format);
-    for (i = 1; i < chans; i++)
-        aconvert->in_strides[i] = aconvert->in_strides[0];
-
-    // The rematrixed buffer
-    if (inlink->channel_layout != aconvert->out_chlayout) {
-        aconvert->mix_samplesref = avfilter_get_audio_buffer(inlink,
-                                           AV_PERM_WRITE|AV_PERM_REUSE2,
-                                           inlink->format,
-                                           nb_samples,
-                                           aconvert->out_chlayout,
-                                           inlink->dst->outputs[0]->planar);
+    if (inlink->channel_layout != outlink->channel_layout) {
+        aconvert->out_samplesref = aconvert->mix_samplesref =
+                avfilter_get_audio_buffer(inlink,
+                                          AV_PERM_WRITE | AV_PERM_REUSE2,
+                                          inlink->format,
+                                          nb_samples,
+                                          outlink->channel_layout,
+                                          oulink->planar);
     }
 
-    // The output buffer
-    chans = inlink->dst->outputs[0]->planar ?
-            av_get_channel_layout_nb_channels(aconvert->out_chlayout) : 1;
-    aconvert->convert_to_out_ctx =
-            av_audio_convert_alloc(aconvert->out_sample_fmt, chans,
-                                   inlink->format, chans, NULL, 0);
+    if (inlink->format != outlink->format || inlink->planar != outlink->planar) {
+        int i, nb_channels;
+        i = nb_channels = 
+            av_get_channel_layout_nb_channels(outlink->channel_layout);
 
-    aconvert->out_samplesref = avfilter_get_audio_buffer(inlink,
-                                   AV_PERM_WRITE|AV_PERM_REUSE2,
-                                   aconvert->out_sample_fmt,
-                                   nb_samples, aconvert->out_chlayout,
-                                   inlink->dst->outputs[0]->planar);
+        aconvert->in_strides[0]  = av_get_bytes_per_sample(inlink->format);
+        aconvert->out_strides[0] = av_get_bytes_per_sample(oulink->format);
 
-    aconvert->out_strides[0] = av_get_bytes_per_sample(aconvert->out_sample_fmt);
-    for (i = 1; i < chans; i++)
-        aconvert->out_strides[i] = aconvert->out_strides[0];
+        if (inlink->planar != outlink->planar) {
+            if (outlink->planar)
+                aconvert->in_strides[0]  *= nb_channels;
+            else
+                aconvert->out_strides[0] *= nb_channels;
+        } else if (!outlink->planar) {
+            nb_channels = 1;
+        }
+
+        while (i--) {
+            aconvert->in_strides[i]  = aconvert->in_strides[0];
+            aconvert->out_strides[i] = aconvert->out_strides[0];
+        }
+        
+        aconvert->audioconvert_ctx =
+                av_audio_convert_alloc(outlink->format, nb_channels,
+                                       inlink->format,  nb_channels, NULL, 0);
+    }
+    
+    if (aconvert->audioconvert_ctx)
+        aconvert->out_samplesref = avfilter_get_audio_buffer(inlink,
+                                          AV_PERM_WRITE | AV_PERM_REUSE2,
+                                          outlink->format,
+                                          nb_samples,
+                                          outlink->channel_layout,
+                                          outlink->planar);
+
 }
 
 static void filter_samples(AVFilterLink *inlink, AVFilterBufferRef *insamplesref)
 {
     AConvertContext *aconvert = inlink->dst->priv;
     AVFilterBufferRef *curbuf = insamplesref;
-    int chans;
+    int nb_channels;
 
-    // if number of samples has changed....
-    if ((aconvert->out_samplesref &&
-            curbuf->audio->nb_samples !=
-                               aconvert->out_samplesref->audio->nb_samples) ||
-    // ... or this is our first batch
-       (!aconvert->out_samplesref &&
-             (curbuf->audio->channel_layout != aconvert->out_chlayout ||
-              curbuf->format != aconvert->out_sample_fmt)))
+    if (!aconvert->nb_samples ||
+        (curbuf->audio->nb_samples > aconvert->nb_samples))
         init_buffers(inlink, curbuf->audio->nb_samples);
-
+    
     if (aconvert->out_samplesref) {
         if (aconvert->mix_samplesref) {
-            chans = av_get_channel_layout_nb_channels(
-                        curbuf->audio->channel_layout);
-
-            aconvert->convert_chlayout(aconvert->mix_samplesref->data[0],
-                                       curbuf->data[0],
-                                       curbuf->audio->nb_samples,
-                                       chans);
+            if (inlink->planar)
+                aconvert->convert_chlayout(aconvert->mix_samplesref->data,
+                                           curbuf->data,
+                                           curbuf->nb_samples);
+            else
+                aconvert->convert_chlayout(aconvert->mix_samplesref->data[0],
+                                           curbuf->data[0],
+                                           curbuf->nb_samples);
 
             curbuf = aconvert->mix_samplesref;
         }
 
-        chans = av_get_channel_layout_nb_channels(
-                    curbuf->audio->channel_layout);
+        if (inlink->planar == outlink->planar == 0)
+            nb_channels = av_get_channel_layout_nb_channels(
+                              curbuf->audio->channel_layout);
+        else
+            nb_channels = 1;
 
-        // Convert to desired sample format
-        av_audio_convert(aconvert->convert_to_out_ctx,
+        av_audio_convert(aconvert->audioconvert_ctx,
                          (void * const *) aconvert->out_samplesref->data,
                          aconvert->out_strides,
                          (const void * const *) curbuf->data,
                          aconvert->in_strides,
-                         curbuf->audio->nb_samples * 
-                            (curbuf->audio->planar ? 1 : chans));
+                         nb_samples * nb_channels);
 
         curbuf = aconvert->out_samplesref;
     }
+
+    curbuf->nb_samples = nb_samples;
 
     avfilter_filter_samples(inlink->dst->outputs[0],
                             avfilter_ref_buffer(curbuf, ~0));
