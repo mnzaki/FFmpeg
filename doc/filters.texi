@@ -99,6 +99,24 @@ build.
 
 Below is a description of the currently available audio filters.
 
+@section aformat
+
+Convert the input audio to one of the specified formats.
+The framework will negotiate the most apropriate format to minimize conversions.
+
+The filter accepts three lists of formats, separated by ":",
+"sample_formats:channel_layouts:packing"
+
+Elements in the list are seperated by "," which has to be escaped in the
+filtergraph specification.
+
+Some examples follow:
+@example
+aformat=u8\\,s16:mono:packed
+
+aformat=s16:mono\\,stereo:packed\\,planar
+@end example
+
 @section anull
 
 Pass the audio source unchanged to the output.
