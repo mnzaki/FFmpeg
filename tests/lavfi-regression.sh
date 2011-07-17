@@ -79,3 +79,58 @@ fi
 # TODO: add tests for
 # direct rendering,
 # chains with feedback loops
+
+# AUDIO FILTERS
+
+do_audio_filter() {
+    label=$1
+    filters=$2
+    shift 2
+    printf '%-20s' $label
+    run_ffmpeg $DEC_OPTS -ar 44100 -ac 2 -sample_fmt s16 -i $pcm_src    \
+        $ENC_OPTS -af "$filters" $* -f nut md5:
+}
+
+map_sample_fmt_codec() {
+case $1 in
+    "u8")  echo "pcm_u8"    ;;
+    "s16") echo "pcm_s16le" ;;
+    "s32") echo "pcm_s16le" ;;
+    "flt") echo "pcm_f32le" ;;
+    "dbl") echo "pcm_f64le" ;;
+esac
+}
+
+# tell if the $1 -> $2 conversion is supported
+supported_channel_conversion() {
+    src=$1
+    dst=$2
+    # hardcode available conversions in aconvert, needs to be updated as the code is changed
+    [ "$src" = "stereo" -a "$dst" = "5.1"    ] ||
+    [                      "$dst" = "stereo" ] ||
+    [                      "$dst" = "mono"   ];
+}
+
+do_lavfi_audiofmts(){
+    test ${test%_[bl]e} = audiofmts_$1 || return 0
+    filter=$1
+    filter_args=$2
+
+    showfiltfmts="$target_exec $target_path/tools/lavfi-showfiltfmts"
+
+    sample_fmts=$($showfiltfmts $filter $filter_args | awk -F '[ \r]' '/^INPUT/ && $3 ~ /fmt:/      { fmt=substr($3,  5); print fmt  }' | sort)
+     ch_layouts=$($showfiltfmts $filter $filter_args | awk -F '[ \r]' '/^INPUT/ && $3 ~ /chlayout:/ { chl=substr($3, 10); print chl  }' | sort)
+       packings=$($showfiltfmts $filter $filter_args | awk -F '[ \r]' '/^INPUT/ && $3 ~ /packing:/  { pack=substr($3, 9); print pack }' | sort)
+    for sample_fmt in $sample_fmts; do
+        for ch_layout in $ch_layouts; do
+            supported_channel_conversion "stereo" $ch_layout || continue
+            for packing in $packings; do
+                do_audio_filter ${sample_fmt}_${ch_layout}_${packing} "aformat=$sample_fmt:$ch_layout:$packing,$filter=$filter_args" \
+                    -acodec $(map_sample_fmt_codec $sample_fmt) -sample_fmt $sample_fmt
+            done
+        done
+    done
+}
+
+# all these filters have exactly one input and exactly one output
+do_lavfi_audiofmts "anull"     ""
