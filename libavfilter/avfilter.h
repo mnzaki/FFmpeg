@@ -646,11 +646,12 @@ struct AVFilterLink {
     AVFilterBufferRef *out_buf;
 
     /**
-     * Define the time base used by the PTS of the frames/samples
-     * which will pass through this link.
+     * Define the time base used by the PTS of the frames which
+     * will pass through this link.
      * During the configuration stage, each filter is supposed to
      * change only the output timebase, while the timebase of the
      * input link is assumed to be an unchangeable property.
+     * This is applicable only to video links.
      */
     AVRational time_base;
 
