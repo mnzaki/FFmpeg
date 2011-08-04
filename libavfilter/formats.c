@@ -19,6 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/eval.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/audioconvert.h"
 #include "avfilter.h"
@@ -231,5 +232,59 @@ void avfilter_formats_changeref(AVFilterFormats **oldref,
         *newref = *oldref;
         *oldref = NULL;
     }
+}
+
+/* internal functions for parsing audio format arguments */
+
+int ff_parse_sample_format(char *arg, void *log_ctx)
+{
+    char *tail;
+    int sample_fmt = av_get_sample_fmt(arg);
+    if (sample_fmt == AV_SAMPLE_FMT_NONE) {
+        sample_fmt = strtol(arg, &tail, 0);
+        if (*tail || (unsigned)sample_fmt >= AV_SAMPLE_FMT_NB) {
+            av_log(log_ctx, AV_LOG_ERROR, "Invalid sample format '%s'\n", arg);
+            return -1;
+        }
+    }
+    return sample_fmt;
+}
+
+int ff_parse_sample_rate(char *arg, void *log_ctx)
+{
+    char *tail;
+    double sample_rate = av_strtod(arg, &tail);
+    if (*tail || sample_rate < 1 || (int)sample_rate != sample_rate) {
+        av_log(log_ctx, AV_LOG_ERROR, "Invalid sample rate '%s'\n", arg);
+        return -1;
+    }
+    return sample_rate;
+}
+
+int64_t ff_parse_channel_layout(char *arg, void *log_ctx)
+{
+    char *tail;
+    int64_t chlayout = av_get_channel_layout(arg);
+    if (chlayout <= 0) {
+        chlayout = strtol(arg, &tail, 0);
+        if (*tail || chlayout <= 0) {
+            av_log(log_ctx, AV_LOG_ERROR, "Invalid channel layout '%s'\n", arg);
+            return -1;
+        }
+    }
+    return chlayout;
+}
+
+int ff_parse_packing_format(char *arg, void *log_ctx)
+{
+    char *tail;
+    int planar = strtol(arg, &tail, 10);
+    if (*tail) {
+        planar = (strcmp(arg, "packed") != 0);
+    } else if (planar != 0 && planar != 1) {
+        av_log(log_ctx, AV_LOG_ERROR, "Invalid packing format '%s'\n", arg);
+        return -1;
+    }
+    return planar;
 }
 

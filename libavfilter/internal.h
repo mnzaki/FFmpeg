@@ -61,4 +61,42 @@ void ff_avfilter_default_free_buffer(AVFilterBuffer *buf);
 /** Tell is a format is contained in the provided list terminated by -1. */
 int ff_fmt_is_in(int fmt, const int *fmts);
 
+/* Functions to parse audio format arguments */
+
+/**
+ * Parse a sample rate.
+ *
+ * @param arg string to parse
+ * @param log_ctx log ctx
+ * @return sample rate or -1 on error
+ */
+int ff_parse_sample_rate(char *arg, void *log_ctx);
+
+/**
+ * Parse a sample format name or a corresponding integer representation.
+ *
+ * @param arg string to parse
+ * @param log_ctx log ctx
+ * @return a sample format, or -1 on error
+ */
+int ff_parse_sample_format(char *arg, void *log_ctx);
+
+/**
+ * Parse a channel layout or a corresponding integer representation.
+ *
+ * @param arg string to parse
+ * @param log_ctx log ctx
+ * @return a channel layout, or -1 on error
+ */
+int64_t ff_parse_channel_layout(char *arg, void *log_ctx);
+
+/**
+ * Parse a packing format or a corresponding integer representation.
+ *
+ * @param arg string to parse
+ * @param log_ctx log ctx
+ * @return a packing format, or -1 on error
+ */
+int ff_parse_packing_format(char *arg, void *log_ctx);
+
 #endif /* AVFILTER_INTERNAL_H */
