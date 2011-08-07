@@ -137,6 +137,51 @@ output sample rates
 aresample=44100
 @end example
 
+@section ladspa
+
+Apply a LADSPA effect.
+
+It accepts the following parameters:
+@var{soname}:@var{plugin}[:@var{rate}=@var{value}]:@var{controls}
+
+@table @option
+
+@item soname
+The name of the shared object file to load. This can be a path (relative or
+absolute) path, or a name without the .so extension. If a name is given then the
+directories in the environment variable LADSPA_PATH are searched, followed by
+the directories "/usr/lib/ladspa" and "/usr/local/lib/ladspa" respectively.
+
+@item plugin
+The label (name) of the plugin to load from the library. If this is omitted
+then a list of plugin labels and their descriptions is printed.
+
+@item rate
+The sample rate to request from the plugin.
+Only applicable for audio source plugins.
+If omitted, the default is 44100.
+
+@item controls
+The control values for the specified plugin. If the special value "help" is
+specified then a list of controls and their descriptions is printed.
+
+The values are specified as a list of @var{key}=@var{value} pairs,
+separated by ":"
+
+@end table
+
+For example:
+@example
+#list all plugins in the cmt library
+ladspa=cmt
+
+#list all controls for the lofi plugin in the cmt library
+ladspa=cmt:lofi:help
+
+#apply the lofi plugin effect
+ladspa=cmt:lofi:c0=50:c1=70:c2=6000
+@end example
+
 @c man end AUDIO FILTERS
 
 @chapter Audio Sources

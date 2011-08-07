@@ -4,6 +4,7 @@ NAME = avfilter
 FFLIBS = avutil
 FFLIBS-$(CONFIG_ACONVERT_FILTER) += avcodec
 FFLIBS-$(CONFIG_ARESAMPLE_FILTER) += avcodec
+FFLIBS-$(CONFIG_LADSPA_FILTER) += dl
 FFLIBS-$(CONFIG_MOVIE_FILTER) += avformat avcodec
 FFLIBS-$(CONFIG_SCALE_FILTER) += swscale
 FFLIBS-$(CONFIG_MP_FILTER) += avcodec
@@ -24,6 +25,7 @@ OBJS-$(CONFIG_ACONVERT_FILTER)               += af_aconvert.o
 OBJS-$(CONFIG_AFORMAT_FILTER)                += af_aformat.o
 OBJS-$(CONFIG_ANULL_FILTER)                  += af_anull.o
 OBJS-$(CONFIG_ARESAMPLE_FILTER)              += af_aresample.o
+OBJS-$(CONFIG_LADSPA_FILTER)                 += af_ladspa.o
 
 OBJS-$(CONFIG_ANULLSRC_FILTER)               += asrc_anullsrc.o
 
