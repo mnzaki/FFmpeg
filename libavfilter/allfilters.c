@@ -38,6 +38,7 @@ void avfilter_register_all(void)
     REGISTER_FILTER (AFORMAT,     aformat,     af);
     REGISTER_FILTER (ANULL,       anull,       af);
     REGISTER_FILTER (ARESAMPLE,   aresample,   af);
+    REGISTER_FILTER (LADSPA,      ladspa,      af);
 
     REGISTER_FILTER (ABUFFER,     abuffer,     asrc);
     REGISTER_FILTER (ANULLSRC,    anullsrc,    asrc);
