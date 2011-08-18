@@ -50,6 +50,8 @@ typedef struct LADSPAContext {
 
     unsigned nb_outs;
     LADSPA_PortDescriptor *out_ports_map;
+
+    AVFilterBufferRef *outsamplesref;
 } LADSPAContext;
 
 static void *try_load(const char *dir, const char *soname)
@@ -269,9 +271,21 @@ static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
         return AVERROR(EINVAL);
     }
 
-    // Unsupported: sources (TODO), sinks (does ladspa even have those?),
-    // filters with unequal inputs and outputs (TODO?)
-    if (!ladspa->nb_outs || !ladspa->nb_ins) {
+    // Deal with source filters
+    if (!ladspa->nb_ins) {
+        if (arg && !strncmp(arg, "rate", 4)) {
+            arg = strchr(arg, '=') + 1;
+            if (ff_parse_sample_rate(&ladspa->sample_rate, arg, ctx) < 0)
+                return AVERROR(EINVAL);
+            arg = strtok_r(NULL, ":", &ptr);
+        } else {
+            ladspa->sample_rate = 44100;
+        }
+    }
+
+    // We don't support sinks (does ladspa even have those?) or filters with
+    // unqeual inputs and outputs (FIXME?)
+    if (!ladspa->nb_outs || (ladspa->nb_ins && ladspa->nb_outs != ladspa->nb_ins)) {
         av_log(ctx, AV_LOG_ERROR, "Unsupported plugin.\n");
         return AVERROR(EINVAL);
     }
@@ -317,17 +331,23 @@ static int query_formats(AVFilterContext *ctx)
         return AVERROR(ENOMEM);
     avfilter_set_common_sample_formats(ctx, formats);
 
-    if (ladspa->nb_ins == 1) {
-        // We will instantiate multiple instances, one over each channel
-        formats = avfilter_all_channel_layouts();
-        if (!formats)
-            return AVERROR(ENOMEM);
+    if (ladspa->nb_ins) {
+        if (ladspa->nb_ins == 1) {
+            // We will instantiate multiple instances, one over each channel
+            formats = avfilter_all_channel_layouts();
+            if (!formats)
+                return AVERROR(ENOMEM);
+        } else {
+            formats = NULL;
+            avfilter_add_format(&formats,
+                avcodec_guess_channel_layout(ladspa->nb_ins, 0, NULL));
+        }
     } else {
+        // Source plugin
         formats = NULL;
         avfilter_add_format(&formats,
-            avcodec_guess_channel_layout(ladspa->nb_ins, 0, NULL));
+            avcodec_guess_channel_layout(ladspa->nb_outs, 0, NULL));
     }
-
     avfilter_set_common_channel_layouts(ctx, formats);
 
     formats = NULL;
@@ -351,9 +371,17 @@ static int config_output(AVFilterLink *outlink)
                 outlink->src->inputs[0]->channel_layout);
     else
         ladspa->nb_handles = 1;
-
-    ladspa->sample_rate = outlink->src->inputs[0]->sample_rate;
-
+    
+    if (ladspa->nb_ins)
+        ladspa->sample_rate   = outlink->src->inputs[0]->sample_rate;
+    else
+        ladspa->outsamplesref = avfilter_get_audio_buffer(
+                                    outlink,
+                                    AV_PERM_WRITE | AV_PERM_REUSE2,
+                                    AV_SAMPLE_FMT_FLT,
+                                    LADSPA_SRC_NB_SAMPLES,
+                                    outlink->channel_layout,
+                                    AVFILTER_PLANAR);
     for (i = 0; i < ladspa->nb_handles; i++) {
         ladspa->handles[i] =
             ladspa->desc->instantiate(ladspa->desc, ladspa->sample_rate);
@@ -374,12 +402,30 @@ static int config_output(AVFilterLink *outlink)
                 ladspa->desc->connect_port(ladspa->handles[i],
                                            i, &ladspa->out_ctl_value);
 
+        // Connect the output ports if this is a source plugin
+        if (!ladspa->nb_ins) {
+            for (j = 0; j < ladspa->nb_outs; j++)
+                ladspa->desc->connect_port(ladspa->handles[i],
+                                           ladspa->out_ports_map[j],
+                                           (LADSPA_Data*)ladspa->outsamplesref->data[j]);
+        }
+
         if (ladspa->desc->activate)
             ladspa->desc->activate(ladspa->handles[i]);
     }
 
     outlink->sample_rate = ladspa->sample_rate;
 
+    return 0;
+}
+
+static int request_frame(AVFilterLink *outlink)
+{
+    LADSPAContext *ladspa = outlink->src->priv;
+
+    ladspa->desc->run(ladspa->handles[0], LADSPA_SRC_NB_SAMPLES);
+    avfilter_filter_samples(outlink,
+        avfilter_ref_buffer(ladspa->outsamplesref, ~0));
     return 0;
 }
 
@@ -449,3 +495,19 @@ AVFilter avfilter_af_ladspa = {
                                   { .name = NULL}},
 };
 
+AVFilter avfilter_asrc_ladspa_src = {
+    .name          = "ladspa_src",
+    .description   = NULL_IF_CONFIG_SMALL("Apply a LADSPA effect."),
+    .priv_size     = sizeof(LADSPAContext),
+    .init          = init,
+    .uninit        = uninit,
+    .query_formats = query_formats,
+
+    .inputs    = (AVFilterPad[]) {{ .name = NULL}},
+
+    .outputs   = (AVFilterPad[]) {{ .name            = "default",
+                                    .type            = AVMEDIA_TYPE_AUDIO,
+                                    .config_props    = config_output,
+                                    .request_frame   = request_frame, },
+                                  { .name = NULL}},
+};
