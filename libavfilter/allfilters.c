@@ -43,6 +43,7 @@ void avfilter_register_all(void)
     REGISTER_FILTER (SOX,         sox,         af);
 
     REGISTER_FILTER (ABUFFER,     abuffer,     asrc);
+    REGISTER_FILTER (ABUFFER,     ladspa_src,  asrc);
     REGISTER_FILTER (ANULLSRC,    anullsrc,    asrc);
 
     REGISTER_FILTER (ABUFFERSINK, abuffersink, asink);
